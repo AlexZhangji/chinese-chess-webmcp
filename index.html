@@ -1,0 +1,967 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<!-- 公网静态托管发不了 COOP/COEP 头, 这个 service worker 替它补上 (MIT, 见 THIRD_PARTY.md)。
+     serve.py 那条路已经有真头, crossOriginIsolated 为真时它什么都不做。 -->
+<script src="coi-serviceworker.js"></script>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#fafbfc">
+<title>象棋</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='%23fff' stroke='%23ab2f27' stroke-width='2.5'/%3E%3Ctext x='16' y='23' font-size='19' text-anchor='middle' fill='%23ab2f27' font-family='serif'%3E%E5%B8%85%3C/text%3E%3C/svg%3E">
+<style>
+/* ────────────────────────────────────────────────────────────
+   JZ Visual Identity v3 (cool near-white, 2026-07-10 canonical)
+   Visual tokens are defined locally below so the public copy has no external design-system dependency.
+   全系统 0 圆角 / 无阴影 / 无渐变 / 立体感一律用 1px 边框
+   字体全部自带, 不走 Google Fonts: 页面开了 COEP require-corp,
+   跨源的 @import 会被直接挡掉。见 assets/fonts/build.sh
+   ──────────────────────────────────────────────────────────── */
+
+@font-face{font-family:"Space Grotesk";src:url("assets/fonts/spacegrotesk-400-latin.woff2") format("woff2");font-weight:400;font-display:swap}
+@font-face{font-family:"Space Grotesk";src:url("assets/fonts/spacegrotesk-500-latin.woff2") format("woff2");font-weight:500;font-display:swap}
+@font-face{font-family:"Space Grotesk";src:url("assets/fonts/spacegrotesk-600-latin.woff2") format("woff2");font-weight:600;font-display:swap}
+@font-face{font-family:"Geist Mono";src:url("assets/fonts/geistmono-400-latin.woff2") format("woff2");font-weight:400;font-display:swap}
+@font-face{font-family:"Geist Mono";src:url("assets/fonts/geistmono-500-latin.woff2") format("woff2");font-weight:500;font-display:swap}
+@font-face{font-family:"Noto Serif SC";src:url("assets/fonts/notoserifsc-400.woff2") format("woff2");font-weight:400;font-display:swap}
+@font-face{font-family:"Noto Serif SC";src:url("assets/fonts/notoserifsc-600.woff2") format("woff2");font-weight:600;font-display:swap}
+/* 棋子字必须是楷体, 换成黑体立刻就不像棋子。楷体不是任何平台的默认字,
+   Linux 和多数手机浏览器上会静默退回黑体, 所以自带 24 字子集 (4.9KB)。
+   霞鹜文楷 LXGW WenKai, SIL OFL 1.1, 见 assets/FONT-LICENSE.md */
+@font-face{font-family:"XQKai";src:url("assets/fonts/kai.woff2") format("woff2");font-weight:400 700;font-display:block}
+
+:root{
+  --bg:#ffffff; --paper:#fafbfc; --paper-2:#eef1f5; --paper-3:#dfe4ea;
+  --rule:#c4ccd6; --rule-soft:#e1e6ec; --rule-strong:#aab4c0;
+  --ink:#0c0e12; --ink-2:#1d232c; --ink-3:#48505b; --ink-mute:#79828e;
+  --crimson:#ab2f27; --crimson-soft:#f0d7d3;
+  --data-pos:#2f6b4a; --data-neg:#ab2f27;
+  --d-fast:130ms; --d-base:220ms;
+  --ease-out:cubic-bezier(.19,1,.22,1);
+
+  --mono:"Geist Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --ui:"Space Grotesk","Noto Sans SC",-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif;
+  --serif:"Noto Serif SC","Source Serif 4",Georgia,serif;
+
+  /* 棋盘同时受容器宽度和视口高度约束。象棋盘的格子是 8:9, 比五子棋更高,
+     视口高度这一项比在五子棋里更容易成为瓶颈, 不能只按宽度算。 */
+  --chrome:206px;   /* 形势带从 56px 涨到 84px + 上面多了一行主读数 */
+  --bmax:680px;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+/* ★ [hidden] 必须压过一切 display 声明。这个坑今天踩了三次 (.result / .setup .srow /
+   .setup 本身): 元素设了 display:flex, [hidden] 的 display:none 同层特异性输,
+   于是"隐藏"的东西照样画出来。与其每处补一条, 不如在这里一次钉死。 */
+[hidden]{display:none !important}
+html,body{margin:0;padding:0}
+html{overflow-x:hidden}
+body{
+  background:var(--bg); color:var(--ink);
+  font:15px/1.6 var(--serif);
+  -webkit-font-smoothing:antialiased;
+  display:flex; justify-content:center;
+  padding:0 22px calc(30px + env(safe-area-inset-bottom));
+}
+.app{width:100%;max-width:1260px;display:grid;grid-template-columns:minmax(0,1fr);gap:20px;align-content:start}
+@media (min-width:1000px){
+  .app{grid-template-columns:minmax(0,max-content) minmax(370px,412px);
+       align-items:start;justify-content:center;column-gap:44px}
+  .colA{grid-column:1}
+  .rail{grid-column:2;position:sticky;top:22px}
+}
+.colA{display:flex;flex-direction:column;gap:14px;min-width:0}
+
+/* ──────── masthead ──────── */
+.masthead{
+  grid-column:1/-1;position:relative;
+  border-bottom:1px solid var(--ink);
+  padding:26px 0 12px;
+  display:flex;align-items:baseline;gap:8px 18px;flex-wrap:wrap;
+}
+/* 引擎在算的时候, 顶栏那条墨线上跑一小段朱红。
+   比一个转圈的 spinner 安静, 而且它长在页面结构上而不是飘在旁边。 */
+.masthead::after{
+  content:"";position:absolute;left:0;bottom:-1px;height:1px;width:0;
+  background:var(--crimson);transition:width .25s linear;
+}
+body.busy .masthead::after{width:100%;transition:width 3.2s cubic-bezier(.15,.85,.3,1)}
+.masthead h1{
+  margin:0;font:600 17px/1 var(--serif);
+  letter-spacing:.42em;text-indent:.42em;color:var(--ink);
+}
+.masthead .tag{
+  font-family:var(--mono);font-size:10px;letter-spacing:.2em;
+  text-transform:uppercase;color:var(--ink-mute);font-weight:500;
+}
+.masthead .meta{
+  font-family:var(--mono);font-size:10.5px;letter-spacing:.14em;
+  text-transform:uppercase;color:var(--ink-3);font-weight:500;
+}
+.masthead .lang{
+  font-family:var(--mono);font-size:10.5px;letter-spacing:.14em;
+  text-transform:uppercase;color:var(--ink-3);font-weight:500;
+  background:none;border:1px solid var(--rule);border-radius:2px;
+  padding:1px 7px;cursor:pointer;line-height:1.6;
+}
+.masthead .lang:hover{color:var(--ink);border-color:var(--ink-3)}
+.status{
+  margin-left:auto;display:flex;align-items:center;gap:8px;
+  font-family:var(--mono);font-size:11px;letter-spacing:.1em;
+  text-transform:uppercase;color:var(--ink-2);font-weight:500;min-height:16px;
+}
+.dot{width:9px;height:9px;flex:0 0 auto;border:1px solid var(--ink)}
+.dot.r{background:var(--crimson);border-color:var(--crimson)}
+.dot.b{background:var(--ink)}
+.dot.idle{background:transparent;border-color:var(--rule-strong)}
+.spin{width:9px;height:9px;flex:0 0 auto;border:1px solid var(--rule);
+  border-top-color:var(--crimson);animation:sp .8s linear infinite}
+@keyframes sp{to{transform:rotate(360deg)}}
+
+/* ──────── 棋盘 ──────── */
+.boardbox{
+  line-height:0;
+  width:min(100%, var(--bmax), calc((100svh - var(--chrome)) * .911));
+  min-width:250px;align-self:center;
+  /* 既不给框也不给底: 棋盘是印在纸上的一张图, 不是一个控件 */
+}
+canvas{display:block;width:100%;height:auto;touch-action:manipulation;cursor:pointer}
+canvas:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
+/* 只给读屏用: 落子和局面变化播报到这里 */
+.sr{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;
+  clip:rect(0 0 0 0);white-space:nowrap;border:0}
+
+/* ──────── 箭头图例 ────────
+   盘上那两支箭曾经各自带一个标签, 结果互相撞、盖住棋子、把虚线切断。
+   名字挪到棋盘正下方这一行: 盘面只承载几何, 命名交给图例。
+   线样照着盘上画, 一眼能对上。 */
+.legend[hidden]{display:none}
+.legend{
+  width:min(100%,var(--bmax));align-self:center;
+  display:flex;flex-wrap:wrap;gap:6px 22px;padding:2px 0 0;
+}
+.lg{display:flex;align-items:center;gap:8px;min-width:0}
+.lg i{flex:0 0 auto;width:26px;height:0;position:relative}
+.lg i::before{content:"";position:absolute;left:0;top:-1px;width:18px;height:2px}
+.lg i::after{content:"";position:absolute;right:0;top:-4px;
+  border:4px solid transparent;border-left-width:7px}
+.lg.r i::before{background:var(--crimson)}
+.lg.k i::before{background:var(--ink)}
+.lg.r i.dash::before{background:none;
+  background-image:repeating-linear-gradient(90deg,var(--crimson) 0 4px,transparent 4px 7px)}
+.lg.k i.dash::before{background:none;
+  background-image:repeating-linear-gradient(90deg,var(--ink) 0 4px,transparent 4px 7px)}
+.lg.r i.solid::after{border-left-color:var(--crimson)}
+.lg.k i.solid::after{border-left-color:var(--ink)}
+/* 空心头: 用一个描边三角近似 —— 和盘上"推演出还没发生"那一档对应 */
+.lg i.dash::after{border-left-color:transparent;
+  border-top-color:transparent;border-bottom-color:transparent}
+.lg.r i.dash::after{box-shadow:none;border-left-color:var(--crimson-soft)}
+.lg.k i.dash::after{border-left-color:var(--paper-3)}
+/* 变化预览: 图例这一行整个换成一串带序号的着法, 序号和盘上起点环里那个数字同一套。
+   颜色仍旧只表示"谁走的" —— 一红一黑交替本身就在说这是双方轮流的一条线。 */
+.lgh{font-family:var(--mono);font-size:9px;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--ink-mute);align-self:center;white-space:nowrap}
+.pv{display:flex;align-items:center;gap:5px;min-width:0}
+.pv i{font-style:normal;font-family:var(--mono);font-size:9px;line-height:1;
+  width:14px;height:14px;display:flex;align-items:center;justify-content:center;
+  border:1px solid var(--rule);border-radius:50%;color:var(--ink-mute);flex:0 0 auto}
+.pv b{font-family:var(--serif);font-size:13px;font-weight:600;letter-spacing:.1em}
+.pv.r b{color:var(--crimson)} .pv.r i{border-color:var(--crimson);color:var(--crimson)}
+.pv.k b{color:var(--ink)}
+.lg em{font-style:normal;font-family:var(--mono);font-size:9px;letter-spacing:.16em;
+  text-transform:uppercase;color:var(--ink-mute);white-space:nowrap}
+.lg b{font-family:var(--serif);font-size:13px;font-weight:600;letter-spacing:.1em}
+.lg.r b{color:var(--crimson)}
+.lg.k b{color:var(--ink)}
+
+/* ──────── 终局结果条 ────────
+   一盘棋结束是这个页面上体量最大的一件事, 之前它只有顶栏一行 10px 的小字,
+   所以被将死之后屏幕上唯一的变化是引擎不再落子 —— 看起来就是卡死了。
+   现在给它上下两道墨线和一行大字, 横贯棋盘宽度。 */
+/* [hidden] 默认是 display:none, 但 .result 自己声明了 display:flex, 同一层特异性
+   后写的赢 —— 于是"隐藏"的结果条照样占位, 在棋盘和曲线之间留下两条横线,
+   看着像页面裂了一道缝。给 [hidden] 补一条显式规则。 */
+.result[hidden]{display:none}
+.result{
+  width:min(100%,var(--bmax));align-self:center;
+  display:flex;align-items:baseline;gap:10px 16px;flex-wrap:wrap;
+  padding:13px 0 12px;border-top:1px solid var(--ink);border-bottom:1px solid var(--ink);
+}
+.result b{font:600 21px/1.1 var(--serif);letter-spacing:.16em;color:var(--ink)}
+.result.red b{color:var(--crimson)}
+.result .how{font-family:var(--serif);font-size:14px;letter-spacing:.14em;color:var(--ink-2)}
+.result .mine{font-family:var(--mono);font-size:10px;letter-spacing:.2em;
+  text-transform:uppercase;color:var(--ink-3);border:1px solid var(--rule);padding:2px 7px}
+.result .why{font-family:var(--mono);font-size:10px;letter-spacing:.1em;color:var(--ink-mute)}
+.result .again{margin-left:auto;padding:8px 14px}
+
+/* ──────── 形势带 ────────
+   棋盘正下方那条横贯全宽的东西: 上面是整局的评估折线, 下面是形势分段
+   (均势 / 红优势 / 黑胜势 ...)。象棋网站一律把这些埋在复盘里, 这里常驻。
+
+   它也是这一页唯一的强水平元素。之前整页拉远看是一片均匀的灰 —— 棋盘和
+   右栏视觉重量一样, 没有任何东西告诉眼睛先看哪里。 */
+.curvewrap{position:relative;width:min(100%,var(--bmax));align-self:center;
+  border-top:1px solid var(--ink);padding-top:9px}
+/* 高度由 JS 自适应 (数据点少于三个时缩成矮带), 这里只给初值 */
+#curve{display:block;width:100%;height:30px;cursor:crosshair}
+.curvewrap .cap{
+  display:flex;justify-content:space-between;align-items:baseline;gap:12px;
+  margin-bottom:7px;
+}
+/* 主读数。整页最该一眼看到的东西, 之前是 11px 等宽字缩在右栏顶上。 */
+.curvewrap .cap .now{display:flex;align-items:baseline;gap:10px;min-width:0}
+.curvewrap .cap .now b{font:600 21px/1 var(--serif);letter-spacing:.14em;color:var(--ink)}
+.curvewrap .cap .now b.r{color:var(--crimson)}
+.curvewrap .cap .now span{font-family:var(--mono);font-size:11.5px;
+  font-variant-numeric:tabular-nums;letter-spacing:.04em;color:var(--ink-mute)}
+/* 刚走那一手的涨跌。和左边的位置分是两个视角 (那个红方, 这个走子方),
+   所以这里靠一道细竖线断开, 别让人读成同一串数。
+   颜色只表示"谁走的", 涨跌不发绿/红 —— 颜色轴归属方 (DESIGN.md 第二节)。 */
+.curvewrap .cap .now .dv{font-family:var(--mono);font-size:11.5px;
+  font-variant-numeric:tabular-nums;letter-spacing:.04em;
+  padding-left:11px;border-left:1px solid var(--rule-soft)}
+.curvewrap .cap .now .dv.r{color:var(--crimson)}
+.curvewrap .cap .now .dv.k{color:var(--ink-3)}
+.curvewrap .cap .at{font-family:var(--mono);font-size:9px;letter-spacing:.18em;
+  text-transform:uppercase;color:var(--ink-mute);margin-left:auto;white-space:nowrap}
+
+/* ──────── 确认框 ────────
+   只在会把一个摆好的局面弄没的动作上出现。
+   ★ 要防的是连点, 所以"确定"必须在另一个位置, 而背景 / Esc / 取消一律是"不做"
+   —— 误点最可能落在背景上, 那里必须是安全的那一边。
+   样式照第一节: 0 圆角, 无阴影, 1px 墨线, 纸色。 */
+.modal{position:fixed;inset:0;z-index:60;display:flex;align-items:center;
+  justify-content:center;padding:22px;background:rgba(12,14,18,.34)}
+.modalbox{width:min(100%,392px);background:var(--paper);border:1px solid var(--ink);
+  padding:20px 20px 16px}
+.modalbox b{display:block;font:600 17px/1.35 var(--serif);letter-spacing:.05em;color:var(--ink)}
+.modalbox p{margin:9px 0 0;font-size:12.5px;line-height:1.7;color:var(--ink-3)}
+.modalbox .mrow{display:flex;justify-content:flex-end;gap:9px;margin-top:17px;
+  border-top:1px solid var(--rule-soft);padding-top:14px}
+.act.danger{background:var(--crimson);color:#fff;border-color:var(--crimson)}
+.act.danger:hover:not(:disabled){background:#8f261f;border-color:#8f261f;color:#fff}
+
+/* ──────── 曲线图例 ────────
+   和棋盘底下那行箭头图例同一个道理 (DESIGN.md 三之二): 曲线上四种记号需要
+   先学一套编码才读得懂, 那就欠一个名字, 而名字放在图形旁边的空地上。
+   记号用 CSS 画, 形状必须和 canvas 里那四种一模一样, 否则图例就是错的。 */
+.cvlegend[hidden]{display:none}
+.cvlegend{display:flex;flex-wrap:wrap;align-items:center;gap:5px 18px;padding:7px 0 0}
+.cl{display:flex;align-items:center;gap:7px;font-family:var(--mono);
+  font-size:10.5px;letter-spacing:.06em;color:var(--ink-mute)}
+.cvlegend .hint{font-family:var(--mono);font-size:10px;letter-spacing:.06em;
+  color:var(--ink-mute);opacity:.75}
+/* 图例里的记号一律用墨色: 这一行说的是形状, 不是哪一方 (颜色轴由末尾那句话交代) */
+/* 两条正交的轴: 圆心填没填色 = 好/坏, 有没有外圈 = 轻/重。
+   带外圈的两个左右各留 3px, 免得外圈贴到旁边的字上。 */
+.cm{flex:0 0 auto;width:6.4px;height:6.4px;border-radius:50%;position:relative;
+  color:var(--ink)}
+.cm.good{border:1.6px solid currentColor}                    /* 好棋: 空心环 */
+.cm.miss{background:currentColor}                            /* 漏着: 实心点 */
+.cm.brill{border:1.6px solid currentColor;                   /* 妙手: 空心环 + 外圈 */
+  box-shadow:0 0 0 2.4px var(--bg),0 0 0 3.6px currentColor;margin:0 3px}
+.cm.blunder{background:currentColor;                         /* 败着: 实心点 + 外圈 */
+  box-shadow:0 0 0 2.4px var(--bg),0 0 0 3.6px currentColor;margin:0 3px}
+
+/* ──────── 操作条 ────────
+   两行, 两个量级 (DESIGN.md 第八节):
+   第一行是**动作** —— 会改变棋局的事, 主动作再重一档;
+   第二行是**视图与档位** —— 只改变我看到什么, 字号和内边距都小一档。
+   之前难度和"分析"并排在第一行, 那会让人以为难度影响分析结果 (它只影响引擎替你走子)。 */
+.acts{display:flex;flex-wrap:wrap;gap:7px;align-items:center}
+.act{
+  appearance:none;cursor:pointer;
+  font:500 12px/1 var(--ui);letter-spacing:.06em;
+  padding:10px 16px;border-radius:0;
+  border:1px solid var(--rule);background:transparent;color:var(--ink-2);
+  transition:border-color var(--d-fast) ease,background var(--d-fast) ease,color var(--d-fast) ease;
+}
+.act:hover:not(:disabled){border-color:var(--ink-3);color:var(--ink)}
+.act:disabled{opacity:.32;cursor:default}
+.act.primary{background:var(--ink);color:#fff;border-color:var(--ink)}
+.act.primary:hover{background:var(--ink-2);border-color:var(--ink-2)}
+.act .kbd{margin-left:8px;font-family:var(--mono);font-size:9.5px;opacity:.45;letter-spacing:.08em}
+.act:focus-visible{outline:1px solid var(--ink);outline-offset:2px}
+
+.grp{display:inline-flex;border:1px solid var(--rule)}
+.grp button{
+  appearance:none;cursor:pointer;border:0;border-left:1px solid var(--rule);
+  font:500 12px/1 var(--ui);letter-spacing:.05em;padding:10px 12px;
+  background:transparent;color:var(--ink-3);
+  transition:background var(--d-fast) ease,color var(--d-fast) ease;
+}
+.grp button:first-child{border-left:0}
+.grp button:hover{color:var(--ink)}
+.grp button.on{background:var(--ink);color:#fff}
+
+/* 视图那一行的组件小一档 */
+.viewbar .grp button{font-size:11px;padding:7px 11px;letter-spacing:.04em}
+.viewbar .grp button.on{background:transparent;color:var(--ink);
+  box-shadow:inset 0 -2px 0 var(--ink)}
+
+/* 原图钉在棋盘右边。窄屏时落到棋盘下方 —— 并排比"能放下"更重要的是别把棋盘挤小,
+   棋盘一小就点不准了 (格距取整那条约束在小尺寸下最吃亏)。 */
+.withphoto{display:flex;gap:14px;align-items:flex-start}
+.withphoto .boardbox{flex:1 1 auto;min-width:0}
+.withphoto .photo{flex:0 0 clamp(190px,26%,320px);margin:0}
+/* 标注的时候原图不是配图, 是**要逐点比对的东西**, 得给够宽度。
+   平时读图确认只是扫一眼, 棋盘该占主位; 这两种用途对宽度的要求是反的。 */
+.withphoto.labeling .photo{flex:0 0 clamp(300px,44%,560px)}
+.withphoto .photo img{width:100%;height:auto;display:block;border:1px solid var(--rule)}
+.withphoto .photo figcaption{font-family:var(--mono);font-size:9px;letter-spacing:.14em;
+  text-transform:uppercase;color:var(--ink-mute);margin-top:5px;
+  display:flex;align-items:center;gap:8px}
+.withphoto .photo figcaption button{appearance:none;cursor:pointer;padding:2px 7px;
+  border:1px solid var(--rule);background:transparent;color:var(--ink-3);
+  font:500 9px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase}
+.withphoto .photo figcaption button:hover{border-color:var(--ink-3);color:var(--ink)}
+/* 收起来之后只剩那一行小字和按钮, 棋盘吃掉整个宽度 */
+.withphoto .photo.folded{flex:0 0 auto}
+.withphoto .photo.folded img{display:none}
+@media (max-width:820px){.withphoto{flex-wrap:wrap}.withphoto .photo{flex:1 1 100%}}
+
+/* ──────── 摆棋条 ────────
+   和第二行同一档 (小一号的字和内边距), 因为它不是"动作"而是一个**状态**:
+   进了摆棋态就不在下棋了, 所以它出现的时候第一行的对局动作全部禁用。 */
+.setup{display:flex;flex-direction:column;gap:8px;
+  padding-top:10px;border-top:1px solid var(--rule-soft)}
+.setup .srow{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.setup .lab{font-family:var(--mono);font-size:9px;letter-spacing:.18em;
+  text-transform:uppercase;color:var(--ink-mute);white-space:nowrap}
+/* ★ 这一行显式写 var(--ui) 而不是继承 body 的 serif。
+   自带的思源宋是**按页面里出现过的字**子集化的, 里面没有"张截拖粘片"这几个 ——
+   继承 serif 的话它们会静默退回系统字体, 一行里两种字混着。摆棋条的说明文字
+   本来就属于小一档的 UI 文案, 用 UI 字体既对味也躲开子集这件事。
+   加中文文案时记住这条: 正文 serif 要重跑 assets/fonts/build.sh, UI 字体不用。 */
+.setup .hint{font:400 10.5px/1.4 var(--ui);color:var(--ink-mute);letter-spacing:.02em}
+.act.sm{font-size:11px;padding:7px 11px}
+.grp.sm button{font-size:11px;padding:7px 11px}
+/* 棋子按钮用棋子的字体和棋子的颜色 —— 手上拿的是哪个子, 一眼就该认出来 */
+.palette{display:flex;flex-wrap:wrap;gap:5px;align-items:center}
+.palette button{appearance:none;cursor:pointer;padding:0;
+  width:32px;height:32px;border:1px solid var(--rule);background:transparent;
+  font:400 16px/1 "XQKai",var(--serif);color:var(--ink-2)}
+.palette button.r{color:var(--crimson)}
+.palette button:hover{border-color:var(--ink-3)}
+.palette button.on{background:var(--ink);border-color:var(--ink);color:#fff}
+.palette button.on.r{background:var(--crimson);border-color:var(--crimson);color:#fff}
+.palette .wd{width:auto;padding:0 10px;font:500 11px/1 var(--ui);letter-spacing:.05em}
+.palette .gap{width:1px;height:22px;background:var(--rule-soft);margin:0 4px}
+.setup .labnow{font-family:var(--mono);font-size:11px;letter-spacing:.04em;
+  color:var(--ink-3);white-space:nowrap}
+.setup .check{font-family:var(--mono);font-size:10.5px;line-height:1.5;
+  letter-spacing:.02em;color:var(--ink-mute);min-height:15px}
+.setup .check b{color:var(--crimson);font-weight:500}
+
+.viewbar{display:flex;align-items:center;gap:8px 16px;flex-wrap:wrap;
+  padding-top:10px;border-top:1px solid var(--rule-soft)}
+/* label 和它的按钮组必须是一个整体, 否则窄屏换行时标签会被留在上一行 */
+.viewbar .vg{display:flex;align-items:center;gap:8px;min-width:0}
+.viewbar .lab{font-family:var(--mono);font-size:9px;letter-spacing:.18em;
+  text-transform:uppercase;color:var(--ink-mute);white-space:nowrap}
+.viewbar .read{font-family:var(--mono);font-size:10px;letter-spacing:.1em;
+  color:var(--ink-mute);margin-left:auto}
+.viewbar .read b{color:var(--crimson);font-weight:500}
+.viewbar .read i{font-style:normal;color:var(--ink-3)}
+
+/* 被吃的子 */
+.taken{display:flex;align-items:center;gap:11px;min-height:20px;
+  font-family:"XQKai",var(--serif);font-size:16px;letter-spacing:.14em;line-height:1}
+.taken .r{color:var(--crimson)}
+.taken .b{color:var(--ink)}
+.taken .bal{margin-left:auto;font-family:var(--mono);font-size:10.5px;
+  letter-spacing:.12em;text-transform:uppercase;color:var(--ink-3)}
+.taken em{font-style:normal;color:var(--ink-mute);font-family:var(--mono);
+  font-size:10px;letter-spacing:.1em}
+
+.log{font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;
+  color:var(--ink-mute);
+  display:flex;flex-wrap:wrap;align-items:center;gap:2px 12px;min-height:14px}
+.log span{color:var(--rule)}
+
+/* ──────── 右栏 ──────── */
+.rail{display:flex;flex-direction:column;gap:0;min-width:0}
+/* 不给面板画框。一堆带边框的卡片是通用后台的长相, 这套 identity 是印刷体系:
+   分栏靠发丝线和留白, 不靠盒子。 */
+.sec{padding:0 0 22px}
+.sec+.sec{border-top:1px solid var(--rule-soft);padding-top:20px}
+.st{
+  display:flex;align-items:baseline;gap:10px;margin-bottom:13px;
+  font-family:var(--mono);font-size:9.5px;letter-spacing:.2em;
+  text-transform:uppercase;color:var(--ink-mute);font-weight:500;
+}
+.st b{
+  font:600 11px/1 var(--mono);letter-spacing:.24em;text-transform:uppercase;color:var(--ink);
+  padding-bottom:3px;border-bottom:1px solid var(--ink);
+}
+.st .tail{margin-left:auto;font-size:10px;letter-spacing:.14em;color:var(--ink-3)}
+
+/* 分析先给判断, 再给数字。大字号不是装饰, 是把“此刻该注意什么”从候选表里提出来。 */
+.decision-head{padding:1px 0 15px;border-bottom:1px solid var(--rule-soft);margin-bottom:12px}
+.decision-kicker{font:500 9px/1.2 var(--mono);letter-spacing:.22em;text-transform:uppercase;
+  color:var(--crimson);margin-bottom:8px}
+.decision-head{min-height:96px}   /* 定高, 免得标题一变整栏跟着跳 */
+.decision-title{display:flex;align-items:baseline;gap:14px;
+  font:600 27px/1.2 var(--serif);letter-spacing:.1em;color:var(--ink)}
+.decision-title em{font-style:normal}
+.decision-title .sc{font:500 15px/1 var(--mono);letter-spacing:.02em;
+  font-variant-numeric:tabular-nums;color:var(--ink-3);margin-left:auto;letter-spacing:0}
+.decision-dek{margin:8px 0 0;font-size:12.5px;line-height:1.65;color:var(--ink-3);max-width:38em}
+.decision-facts{display:grid;grid-template-columns:repeat(3,1fr);border-bottom:1px solid var(--rule-soft);
+  margin:0 0 15px}
+.decision-facts>div{padding:9px 10px 10px 0;min-width:0}
+.decision-facts>div+div{border-left:1px solid var(--rule-soft);padding-left:11px}
+.decision-facts b{display:block;font:500 16px/1.25 var(--mono);font-variant-numeric:tabular-nums;
+  color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.decision-facts span{display:block;margin-top:3px;font:400 8.5px/1.3 var(--mono);
+  letter-spacing:.14em;text-transform:uppercase;color:var(--ink-mute)}
+.varline{display:flex;align-items:baseline;flex-wrap:wrap;gap:0 10px;
+  padding:11px 0 2px;font-size:13px;line-height:1.7;min-height:20px}
+.varline .lab{font:500 8.5px/1 var(--mono);letter-spacing:.17em;text-transform:uppercase;
+  color:var(--ink-mute);flex:0 0 auto}
+.varline b{font-family:var(--serif);font-weight:600;letter-spacing:.08em}
+.varline b.r{color:var(--crimson)}
+.varline b.k{color:var(--ink-2)}
+/* 主变红黑交替上色: 一串连排看不出谁走的, 上了色就同时是轮次指示 */
+.methodline{margin-top:10px;font:400 9px/1.65 var(--mono);letter-spacing:.03em;color:var(--ink-mute)}
+
+/* 候选表 */
+table.cand{width:100%;border-collapse:collapse}
+table.cand th{
+  font-family:var(--mono);font-size:9.5px;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--ink-mute);font-weight:500;text-align:right;
+  padding:0 0 6px;border-bottom:1px solid var(--rule-soft);
+}
+table.cand th:first-child,table.cand th:nth-child(2){text-align:left}
+table.cand td{
+  padding:6px 0;border-bottom:1px solid var(--rule-soft);text-align:right;cursor:pointer;
+  font-family:var(--mono);font-size:12px;font-variant-numeric:tabular-nums;
+  letter-spacing:-.01em;color:var(--ink-2);
+}
+table.cand td:first-child{text-align:left;color:var(--ink-mute);font-size:10px;width:16px}
+table.cand td:nth-child(2){
+  text-align:left;font-family:var(--serif);font-size:14px;font-weight:600;
+  letter-spacing:.1em;color:var(--ink);
+}
+table.cand td .ann{margin-left:8px;font-family:var(--mono);font-size:9px;
+  letter-spacing:.12em;color:var(--ink-mute);font-weight:400;vertical-align:1.5px}
+table.cand tr:last-child td{border-bottom:0}
+table.cand tbody tr{cursor:pointer}
+table.cand tr:hover td{background:var(--paper-2)}
+/* 搜索途中面板会重画, 真正的 :hover 会跟着丢。.hov 是重画之后按记着的那条补回来的,
+   得和 :hover 长得一样, 否则手没动而底色闪了一下。 */
+table.cand tr.hov td{background:var(--paper-2)}
+/* 选中的候选 = 盘上正在画箭头的那一条。用墨色下划线绑在一起, 不填底色。
+   ★ 原来这里是金色, 那是盘上建议箭还是金色时留下的。金色已经废掉,
+   留着它就等于"任意一条候选被选中时都染上引擎建议色", 和 DESIGN.md 相冲。 */
+table.cand tr.sel td{background:transparent;box-shadow:inset 0 -2px 0 var(--ink)}
+table.cand tr.sel td:nth-child(2){color:var(--ink);font-weight:600}
+table.cand tr.played td:nth-child(2)::after{
+  content:"实战";margin-left:8px;font-family:var(--mono);font-size:9px;
+  letter-spacing:.14em;color:var(--crimson);font-weight:500;vertical-align:1.5px}
+.bar{display:block;height:2px;background:var(--ink-3)}
+.barwrap{width:52px;display:inline-block;vertical-align:middle}
+td.wr{color:var(--data-pos)}
+
+/* 棋谱 */
+.sheet{
+  display:grid;grid-template-columns:26px 1fr 1fr;
+  max-height:236px;overflow:auto;
+  border-top:1px solid var(--rule-soft);
+}
+.sheet>*{border-bottom:1px solid var(--rule-soft)}
+.sheet .n{font-family:var(--mono);font-size:9.5px;color:var(--ink-mute);
+  padding:6px 0;font-variant-numeric:tabular-nums;text-align:right;
+  padding-right:9px;border-right:1px solid var(--rule-soft)}
+/* 当前这一手不刷整块黑。在一张近白的纸上一个纯黑实心块是砸下来的锤子,
+   而它承载的只是一个游标。改成左边一条竖线 + 加粗, 层级用字重不用色块
+   (DESIGN.md 第七节)。 */
+.sheet .m{padding:6px 9px;cursor:pointer;font-family:var(--serif);font-size:13px;
+  letter-spacing:.1em;color:var(--ink-2);display:flex;align-items:baseline;gap:6px;
+  position:relative;transition:background var(--d-fast) ease}
+.sheet .m .tag{margin-left:auto}
+.sheet .m:hover{background:var(--paper-2)}
+.sheet .m.cur{font-weight:600;color:var(--ink);background:var(--paper-2)}
+.sheet .m.cur::before{content:"";position:absolute;left:0;top:0;bottom:0;
+  width:2px;background:var(--ink)}
+.sheet .m.red{color:var(--crimson)}
+.sheet .m.cur.red{color:var(--crimson)}
+.sheet .m.cur.red::before{background:var(--crimson)}
+.sheet .m .tag{font-family:var(--mono);font-size:9.5px;margin-left:5px;
+  letter-spacing:.02em;color:var(--ink-mute);font-weight:400}
+.sheet .m.bad .tag{color:var(--crimson)}
+.sheet .empty{font-family:var(--mono);font-size:10px;letter-spacing:.14em;
+  text-transform:uppercase;color:var(--ink-mute);padding:4px 0}
+
+/* 设置行 */
+.row{display:flex;align-items:center;gap:12px;padding:6px 0}
+.row .lab{font-family:var(--mono);font-size:10px;letter-spacing:.16em;
+  text-transform:uppercase;color:var(--ink-3);flex:0 0 42px}
+
+.note{font-size:12px;line-height:1.65;color:var(--ink-3);margin-top:10px}
+.callout{margin-top:11px;padding:9px 12px;border-left:2px solid var(--rule-strong);
+  background:var(--paper-2);font-size:12.5px;line-height:1.6;color:var(--ink-2)}
+.callout.hot{border-left-color:var(--crimson);background:var(--crimson-soft);color:var(--ink)}
+.callout b{font-weight:600}
+.askmove{margin-top:10px;display:flex;flex-wrap:wrap;align-items:center;gap:6px}
+.askmove label{font-size:11px;color:var(--ink-3);letter-spacing:.04em}
+.askmove input{flex:1;min-width:120px;font:inherit;font-size:12px;padding:4px 7px;
+  border:1px solid var(--rule);border-radius:2px;background:transparent;color:var(--ink)}
+.askmove .askout{flex-basis:100%;font-size:12px;color:var(--ink-3);min-height:1.2em}
+.askmove .askout.good{color:var(--crimson);font-weight:600}
+.askmove .askout.bad{color:var(--ink);font-weight:600}
+.callout .n{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.callout.threat{border-left-color:var(--ink);background:var(--paper)}
+.callout.threat .mv{font-family:var(--serif);font-weight:600;font-size:14px;
+  letter-spacing:.12em;color:var(--ink)}
+/* 受攻清单。刻意做得安静: 盘面上几乎每一步都有子无根, 天天亮一个红框等于
+   把这条信息变成墙纸。这里要的是"读引擎首选之前先扫一眼", 不是警报。
+   棋子名用衬线体和盘面对齐, 打它的那一方降到弱色 —— 主语是我的子, 不是对方的子。 */
+.callout.loose{border-left-color:var(--rule-strong);background:var(--paper)}
+
+.callout.loose .pc{font-family:var(--serif);font-weight:600;font-size:13.5px;
+  letter-spacing:.08em;color:var(--ink);margin:0 .35em 0 .25em}
+
+.callout.loose .by{color:var(--ink-mute);font-size:12px}
+
+.callout .hint{display:block;margin-top:5px;font-size:11px;line-height:1.55;color:var(--ink-mute)}
+
+/* ──────── 绝杀 ────────
+   这是右栏唯一带上下墨线的东西, 体量对齐终局结果条 —— 因为它说的就是同一件事,
+   只是还没落子。别的提示都是"注意一下", 这一条是"这局已经定了"。
+   上下两道线而不是一个色块: 第七节, 层级用字号和线, 不用砸下来的实心块。 */
+.mateban{margin-top:13px;padding:11px 0 10px;
+  border-top:1px solid var(--ink);border-bottom:1px solid var(--ink);
+  display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 11px}
+.mateban b{font:600 17px/1.2 var(--serif);letter-spacing:.14em;color:var(--ink)}
+.mateban .tag{font-family:var(--mono);font-size:9.5px;letter-spacing:.2em;
+  text-transform:uppercase;color:var(--ink-3);border:1px solid var(--rule);padding:2px 7px}
+/* 被杀那一侧用朱红描边: 朱红在这里不是"红方", 是警示 —— 而这一条整块只有一个含义,
+   不会和红方的记号在同一个平面上撞 (DESIGN.md 第九节, 模式互斥) */
+.mateban.lose{border-color:var(--crimson)}
+.mateban.lose .tag{color:var(--crimson);border-color:var(--crimson)}
+.mateban .line{flex:1 0 100%;display:flex;flex-wrap:wrap;gap:4px 9px;margin-top:2px}
+.mateban .line b{font:600 14px/1.5 var(--serif);letter-spacing:.1em}
+.mateban .line b.r{color:var(--crimson)}
+.mateban .line b.k{color:var(--ink)}
+.mateban .hint{flex:1 0 100%;font-size:11px;line-height:1.55;color:var(--ink-mute)}
+/* 形势带里那个读数: 绝杀时右边跟的不是兵值, 是"还剩几步" */
+.curvewrap .cap .now span.mate{color:var(--ink-2);letter-spacing:.1em}
+.callout.threat .hint{margin-top:3px;font-family:var(--mono);
+  font-size:9.5px;letter-spacing:.12em;text-transform:uppercase}
+
+/* 复盘 */
+.rev{display:flex;flex-direction:column;gap:0}
+.band{display:grid;grid-template-columns:repeat(3,1fr);border-bottom:1px solid var(--rule-soft)}
+.band>div{padding:0 10px 13px 0;min-width:0}
+.band>div+div{border-left:1px solid var(--rule-soft);padding-left:12px}
+.band b{display:block;font:500 21px/1.15 var(--mono);font-variant-numeric:tabular-nums;color:var(--ink)}
+.band span{display:block;margin-top:5px;font:400 8.5px/1.35 var(--mono);
+  letter-spacing:.13em;text-transform:uppercase;color:var(--ink-mute)}
+/* 分级。每一档后面直接写判据 —— 六个词加六个数字, 不写判据就是六个来路不明的数 */
+.grades{display:flex;flex-wrap:wrap;gap:4px 18px;padding:10px 0;
+  border-bottom:1px solid var(--rule-soft);
+  font-family:var(--mono);font-size:10px;letter-spacing:.14em;color:var(--ink-mute)}
+.grades span{display:flex;align-items:baseline;gap:5px;min-width:0}
+.grades span.on{color:var(--ink)}
+.grades b{font-weight:500;font-size:13px;font-variant-numeric:tabular-nums}
+.grades span.on b{color:var(--crimson)}
+.grades span.good.on b{color:var(--data-pos)}
+.grades i{font-style:normal;font-size:9px;letter-spacing:.02em;color:var(--ink-mute);
+  opacity:.75;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.grades+.grades{padding-top:0}
+.split{display:grid;grid-template-columns:1fr 1fr;border-bottom:1px solid var(--rule-soft)}
+.split>div{padding:11px 10px 12px 0;font-size:11px;line-height:1.5;color:var(--ink-3)}
+.split>div+div{border-left:1px solid var(--rule-soft);padding-left:12px}
+.split b{display:block;font:500 19px/1.2 var(--mono);font-variant-numeric:tabular-nums;
+  color:var(--ink);margin-bottom:3px}
+.split div.hot b{color:var(--crimson)}
+.subhead{display:flex;align-items:baseline;gap:9px;padding:13px 0 3px;
+  font:500 9px/1.3 var(--mono);letter-spacing:.18em;text-transform:uppercase;color:var(--ink)}
+.subhead span{margin-left:auto;color:var(--ink-mute);font-weight:400;letter-spacing:.08em}
+.errline .grade{font-family:var(--mono);font-size:9px;letter-spacing:.14em;
+  color:var(--crimson);border:1px solid var(--crimson);padding:1px 4px;vertical-align:2px}
+.errline.good .grade{color:var(--data-pos);border-color:var(--data-pos)}
+.errline .loss.ok{color:var(--data-pos)}
+.sheet .m.good .tag{color:var(--data-pos)}
+.review-progress{padding:15px 0;border-top:1px solid var(--rule-soft);border-bottom:1px solid var(--rule-soft)}
+.review-progress .phase{display:flex;justify-content:space-between;font:500 9px/1.3 var(--mono);
+  letter-spacing:.16em;text-transform:uppercase;color:var(--ink-3);margin-bottom:9px}
+.review-progress .track{height:2px;background:var(--paper-3)}
+.review-progress .track i{display:block;height:100%;background:var(--crimson);transition:width .2s linear}
+.review-progress p{font-size:11.5px;line-height:1.6;color:var(--ink-mute);margin:9px 0 0}
+/* 每个失误一条小曲线: 横轴是搜索层数, 纵轴是这一手比正手差多少。
+   "第 6 层才露馅"写成数字是一个词, 画出来才看得见它是怎么塌下去的。 */
+.spark{display:block;width:100%;height:46px;margin:7px 0 2px}
+.errline{padding:11px 0 10px;border-top:1px solid var(--rule-soft);cursor:pointer}
+.errline .hd{display:flex;align-items:baseline;gap:9px;font-size:12.5px;color:var(--ink-2)}
+/* "第 33 手" 在 46px 里放不下会折成两行, 整条失误行跟着变高。
+   给足宽度并禁止折行 —— 手数是定长的东西, 不该由它决定行高。 */
+.errline .hd .no{font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;
+  text-transform:uppercase;color:var(--ink-mute);flex:0 0 58px;white-space:nowrap}
+.errline .hd .mv{font-family:var(--serif);font-weight:600;letter-spacing:.08em;color:var(--ink)}
+.errline .hd .loss{font-family:var(--mono);font-size:11px;color:var(--crimson);margin-left:auto}
+.errline .sub{display:flex;align-items:baseline;gap:8px;margin-top:3px;flex-wrap:wrap;
+  font-family:var(--mono);font-size:9.5px;letter-spacing:.12em;
+  text-transform:uppercase;color:var(--ink-mute);padding-left:58px}
+.errline:hover{background:var(--paper)}
+.revline{display:flex;gap:11px;align-items:baseline;font-size:12.5px;color:var(--ink-2)}
+.revline .k{font-family:var(--mono);font-size:9.5px;letter-spacing:.14em;
+  text-transform:uppercase;color:var(--ink-mute);flex:0 0 58px}
+.quad{display:grid;grid-template-columns:1fr 1fr;gap:0;margin-top:6px;
+  border:1px solid var(--rule-soft)}
+.quad div{padding:9px 11px;font-size:11px;line-height:1.5;color:var(--ink-3)}
+.quad div+div{border-left:1px solid var(--rule-soft)}
+.quad div b{display:block;font-family:var(--mono);font-size:19px;font-weight:500;
+  font-variant-numeric:tabular-nums;color:var(--ink);margin-bottom:3px}
+.quad div.hot b{color:var(--crimson)}
+
+footer{grid-column:1/-1;border-top:1px solid var(--rule);padding-top:12px;margin-top:6px;
+  font-family:var(--mono);font-size:10px;letter-spacing:.1em;color:var(--ink-mute);line-height:1.9}
+footer summary{cursor:pointer;letter-spacing:.16em;text-transform:uppercase;margin-bottom:7px}
+footer .body{font-family:var(--serif);font-size:12px;letter-spacing:0;
+  text-transform:none;line-height:1.7;color:var(--ink-3);max-width:66ch}
+.kb{display:inline-block;border:1px solid var(--rule);padding:1px 5px;
+  font-family:var(--mono);font-size:9.5px;color:var(--ink-3);margin:0 1px}
+.err{color:var(--crimson)}
+
+/* ──────── agent (WebMCP) ──────── */
+.agentread{font-family:var(--mono);font-size:10px;letter-spacing:.08em;line-height:1.7;
+  color:var(--ink-mute);margin-top:8px}
+.agentread b{color:var(--ink);font-weight:500}
+.agentread i{font-style:normal;color:var(--ink-mute)}
+.agentread .no{color:var(--crimson)}
+footer .agentpanel .body{max-width:none}
+footer .agentpanel code{font-family:var(--mono);font-size:11px}
+.agentpanel .tools{margin-top:10px;border-top:1px solid var(--rule-soft)}
+.agentpanel .tl{display:grid;grid-template-columns:150px 1fr;gap:12px;padding:5px 0;
+  border-bottom:1px solid var(--rule-soft);font-size:11.5px;line-height:1.5;color:var(--ink-3)}
+.agentpanel .tl b{font-family:var(--mono);font-size:10.5px;font-weight:500;letter-spacing:.02em;color:var(--ink)}
+.agentpanel .tl.off{color:var(--ink-mute)}
+.agentpanel .tl.off b{color:var(--ink-mute);text-decoration:line-through}
+.agentpanel .call{display:flex;gap:8px;align-items:center;margin-top:12px;flex-wrap:wrap}
+.agentpanel .call select,.agentpanel .call input{font-family:var(--mono);font-size:11px;
+  border:1px solid var(--rule);background:var(--paper);color:var(--ink);padding:6px 8px;border-radius:0}
+.agentpanel .call input{flex:1 1 240px;min-width:0}
+.agentpanel pre{font-family:var(--mono);font-size:10.5px;line-height:1.5;white-space:pre-wrap;
+  word-break:break-word;color:var(--ink-3);margin:8px 0 0;max-height:320px;overflow:auto}
+@media (max-width:560px){.agentpanel .tl{grid-template-columns:1fr}}
+/* agent 卡片: 注册边界是页面的事实, 要跟拨动它的那个开关同屏可见 */
+.agentcard{margin-top:14px;border-top:1px solid var(--rule);padding-top:9px}
+.ac-head{display:flex;align-items:baseline;gap:8px;font-family:var(--mono);font-size:10px;
+  letter-spacing:.14em;text-transform:uppercase;color:var(--ink-mute)}
+.ac-head b{color:var(--ink);font-weight:500;letter-spacing:.18em}
+.ac-head .live{color:var(--data-pos);letter-spacing:.06em;text-transform:none}
+.ac-head .shim{color:var(--ink-mute);letter-spacing:.06em;text-transform:none}
+.ac-chips{display:flex;flex-wrap:wrap;gap:4px;margin-top:8px}
+.ac-chip{font-family:var(--mono);font-size:11.5px;line-height:1;padding:5px 7px;
+  border:1px solid var(--rule);border-radius:2px;color:var(--ink-2);background:var(--bg)}
+.ac-chip.off{color:var(--ink-mute);border-color:var(--rule-soft);text-decoration:line-through}
+.ac-chip.new{animation:ac-in 1800ms var(--ease-out)}
+@keyframes ac-in{0%{background:var(--crimson-soft);border-color:var(--crimson);color:var(--crimson)}
+  100%{background:var(--bg);border-color:var(--rule);color:var(--ink-2)}}
+.ac-call{margin-top:9px;font-family:var(--mono);font-size:11px;line-height:1.6;
+  color:var(--ink-mute);min-height:1.6em}
+.ac-call b{color:var(--ink);font-weight:500}
+
+/* ──────── 手机 ────────
+   桌面那套是"棋盘 + 常驻右栏", 手机上右栏会把棋盘挤到要滚两屏才看得见。
+   所以手机是一套独立规则: 棋盘吃满宽, 操作条贴着棋盘, 面板往下叠,
+   点击目标全部拉到 40px 以上。 */
+@media (max-width:640px){
+  body{padding:0 14px calc(24px + env(safe-area-inset-bottom))}
+  .app{gap:14px}
+  .masthead{padding:18px 0 10px}
+  .masthead h1{font-size:15px;letter-spacing:.34em;text-indent:.34em}
+  .masthead .tag{display:none}
+  .masthead .meta{font-size:9.5px;letter-spacing:.1em}
+  .status{font-size:10px;letter-spacing:.08em;margin-left:auto}
+  .colA{gap:11px}
+  .rail{gap:11px}
+  .sec{padding:12px 13px 13px}
+  :root{--chrome:262px}
+  .act{padding:11px 14px;font-size:12px}
+  .grp button{padding:11px 13px;font-size:12px}
+  /* 视图那一行手机上每组各占一整行, 按钮平分宽度 —— 挤在一行会让每个
+     点击目标缩到 30px 以下。操作条本身可以照常换行, 它的按钮已经够大。 */
+  .viewbar{gap:9px 12px}
+  .viewbar .vg{width:100%}
+  .viewbar .vg .grp{flex:1;display:flex}
+  .viewbar .vg .grp button{flex:1;padding:10px 6px}
+  .viewbar .read{margin-left:0}
+  .sheet{max-height:none;grid-template-columns:20px 1fr 1fr}
+  table.cand td:nth-child(2){font-size:13.5px}
+  .quad div b{font-size:17px}
+  .decision-title{font-size:22px}
+  footer .body{font-size:12.5px}
+}
+@media (max-width:380px){
+  body{padding:0 10px calc(20px + env(safe-area-inset-bottom))}
+  .act{padding:10px 11px;letter-spacing:.03em}
+  .grp button{padding:10px 9px;letter-spacing:.02em}
+}
+/* 手机横屏: 高度是稀缺的, 棋盘按高度算并且把右栏拉回旁边 */
+@media (max-height:520px) and (orientation:landscape){
+  :root{--chrome:140px}
+  .app{grid-template-columns:minmax(0,max-content) minmax(300px,1fr);column-gap:18px}
+  .masthead{padding:12px 0 8px}
+}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <header class="masthead">
+    <h1>象棋</h1>
+    <span class="tag">Xiangqi</span>
+    <span class="meta" id="metaMode">人机 · 我执红</span>
+    <button type="button" class="lang" id="langBtn" title="切换界面语言">EN</button>
+    <div class="status" id="status"><span class="dot idle"></span><span id="statusText" data-i18n="status.init">初始化</span></div>
+  </header>
+
+  <script>
+  // 早于主脚本注册: 主脚本若有语法错误或运行时异常, 把原因印在状态栏上, 不留白屏
+  window.addEventListener('error', function(e){
+    var s = document.getElementById('statusText');
+    if(!s) return;
+    var at = e && e.lineno ? (' @'+e.lineno+':'+e.colno) : '';
+    s.innerHTML = '<span class="err">出错 '+String((e&&(e.message||e.type))||'?').replace(/[<>&]/g,'')+at+'</span>';
+  });
+  </script>
+
+  <div class="colA">
+    <!-- 读图进来时原图钉在棋盘旁边。核对是逐点比对, 参照物不该在另一个窗口里。 -->
+    <div class="withphoto" id="boardRow">
+      <div class="boardbox">
+        <canvas id="cv" tabindex="0" role="application"
+                data-i18n-aria-label="board.aria" aria-label="象棋棋盘。方向键移动光标, 回车选子或落子, Esc 取消。"></canvas>
+      </div>
+      <figure class="photo" id="photoBox" hidden>
+        <img id="photoImg" data-i18n-alt="photo.alt" alt="读进来的原图">
+        <figcaption><button type="button" id="photoToggle" data-i18n="photo.collapse">收起</button>
+          <span data-i18n="photo.cap">原图 · 点图放大</span></figcaption>
+      </figure>
+    </div>
+    <p class="sr" id="live" aria-live="polite"></p>
+
+    <div class="legend" id="legend" hidden></div>
+
+    <div class="result" id="result" hidden></div>
+
+    <div class="curvewrap">
+      <div class="cap">
+        <span class="now" id="curveNow"><b data-i18n="curve.now">形势</b></span>
+        <span class="at" id="curveAt"></span>
+      </div>
+      <canvas id="curve"></canvas>
+      <div class="cvlegend" id="curveLegend" hidden></div>
+    </div>
+
+    <div class="acts">
+      <button class="act" id="analyzeBtn"><span data-i18n="acts.analyze">分析</span><span class="kbd">A</span></button>
+      <button class="act" id="undoBtn"><span data-i18n="acts.undo">悔棋</span><span class="kbd">Z</span></button>
+      <button class="act" id="reviewBtn"><span data-i18n="acts.review">复盘</span></button>
+      <button class="act" id="exitReviewBtn" hidden><span data-i18n="acts.exitReview">退出复盘</span></button>
+      <button class="act" id="resignBtn"><span data-i18n="acts.resign">认输</span></button>
+      <button class="act" id="newBtn"><span data-i18n="acts.new">重开</span><span class="kbd">N</span></button>
+      <button class="act" id="setupBtn"><span data-i18n="acts.setup">摆棋</span></button>
+    </div>
+
+    <!-- 摆棋 / 读图。整条只在摆棋态出现, 和对局态互斥 (DESIGN.md 第九节)。 -->
+    <div class="setup" id="setupBar" hidden>
+      <div class="srow">
+        <span class="lab" data-i18n="setup.1">1 · 读图</span>
+        <button class="act sm" id="shotBtn" hidden data-i18n="setup.shot">拍一张</button>
+        <button class="act sm" id="readImgBtn" data-i18n="setup.read">读一张图</button>
+        <span class="hint" data-i18n="setup.readHint">也可以 Ctrl+V 粘贴截图, 或把图片拖到棋盘上</span>
+      </div>
+      <div class="srow">
+        <span class="lab" data-i18n="setup.2">2 · 改子</span>
+        <span class="hint" data-i18n="setup.editHint">拿一个子点在盘上落下去 · 拿"核对"只消红点不改子 · 拿"拿掉"清子</span>
+      </div>
+      <div class="palette" id="palette"></div>
+      <div class="srow">
+        <span class="lab" data-i18n="setup.3">3 · 轮谁走</span>
+        <div class="grp sm" id="stmGrp">
+          <button data-s="1" class="on" data-i18n="setup.redFirst">红先</button><button data-s="-1" data-i18n="setup.blackFirst">黑先</button>
+        </div>
+        <span class="hint" id="stmHint" data-i18n="setup.stmHint">照片里看不出该谁走, 自己定一下</span>
+      </div>
+      <div class="srow">
+        <span class="lab" data-i18n="setup.4">4 · 完成</span>
+        <button class="act sm primary" id="setupOkBtn" data-i18n="setup.ok">确认并开始分析</button>
+        <button class="act sm" id="clearBoardBtn" data-i18n="setup.clear">清盘</button>
+        <button class="act sm" id="setupCancelBtn" data-i18n="setup.cancel">取消</button>
+      </div>
+      <div class="check" id="setupCheck"></div>
+      <!-- 标注模式: 只有 ?label=1 才出现。同一套确认盘, 多一条翻页和保存。 -->
+      <div class="srow" id="labelBar" hidden>
+        <span class="lab" data-i18n="setup.label">标注</span>
+        <button class="act sm" id="labPrev" data-i18n="setup.prev">上一张</button>
+        <span class="labnow" id="labNow"></span>
+        <button class="act sm" id="labNext" data-i18n="setup.next">下一张</button>
+        <button class="act sm primary" id="labSave" data-i18n="setup.save">存为标准答案</button>
+        <button class="act sm" id="labRedo" data-i18n="setup.redo">重新识别</button>
+      </div>
+    </div>
+    <input type="file" id="imgIn" accept="image/*" hidden>
+    <!-- capture=environment: 手机上直接调后置摄像头, 跳过相册。
+         桌面浏览器会忽略 capture, 所以"拍一张"那个按钮只在有摄像头时才显示。 -->
+    <input type="file" id="camIn" accept="image/*" capture="environment" hidden>
+
+    <div class="viewbar">
+      <div class="vg"><span class="lab" data-i18n="view.level">难度</span>
+        <div class="grp" id="lvlGrp">
+          <button data-l="0" data-i18n="lvl.0">入门</button><button data-l="1" data-i18n="lvl.1">业余</button><button data-l="2" class="on" data-i18n="lvl.2">较强</button><button data-l="3" data-i18n="lvl.3">全力</button>
+        </div>
+      </div>
+      <div class="vg"><span class="lab" data-i18n="view.layer">盘面</span>
+        <div class="grp" id="layerGrp">
+          <button data-y="0" data-i18n="layer.0">无</button><button data-y="1" class="on" data-i18n="layer.1">无根</button><button data-y="2" data-i18n="layer.2">控制</button>
+        </div>
+      </div>
+      <div class="vg"><span class="lab" data-i18n="view.flip">视角</span>
+        <div class="grp" id="flipGrp">
+          <button data-f="0" class="on" data-i18n="flip.0">红在下</button><button data-f="1" data-i18n="flip.1">黑在下</button>
+        </div>
+      </div>
+      <div class="vg"><span class="lab" data-i18n="view.theme">主题</span>
+        <div class="grp" id="themeGrp">
+          <button data-t="0" class="on" data-i18n="theme.0">纸</button><button data-t="1" data-i18n="theme.1">木</button><button data-t="2" data-i18n="theme.2">竹</button>
+        </div>
+      </div>
+      <span class="read" id="layerRead"></span>
+    </div>
+
+    <div class="taken" id="taken"></div>
+    <div class="log" id="log"></div>
+  </div>
+
+  <aside class="rail">
+
+    <div class="sec" id="revSec" hidden>
+      <div class="st"><b data-i18n="sec.review">复盘</b><span data-i18n="sec.reviewThis">本局</span><span class="tail" id="revMeta"></span></div>
+      <div class="rev" id="revBody"></div>
+    </div>
+
+    <div class="sec" id="anaSec">
+      <div class="st"><b data-i18n="sec.ana">局面分析</b><span id="anaMode" data-i18n="ana.off">未开</span><span class="tail" id="anaMeta"></span></div>
+      <div id="anaBody">
+        <div class="decision-head">
+          <div class="decision-kicker" data-i18n="ana.kicker">引擎首选</div>
+          <div class="decision-title" data-i18n="ana.titleOff">未开启</div>
+          <p class="decision-dek" data-i18n="ana.dek">按"分析"或空格键开启。对局中默认关闭。</p>
+        </div>
+        <div class="methodline" data-i18n="ana.method">Pikafish 于本机浏览器运行, 无分析后端。开启分析时会把当前局面 (FEN) 发给 chessdb 公共云库查询</div>
+      </div>
+    </div>
+
+    <div class="sec">
+      <div class="st"><b data-i18n="sec.sheet">棋谱</b><span class="tail" id="sheetMeta"></span></div>
+      <div class="sheet" id="sheet"></div>
+    </div>
+
+    <div class="sec">
+      <div class="st"><b data-i18n="sec.game">对局设置</b></div>
+      <div class="row"><span class="lab" data-i18n="row.mode">模式</span>
+        <div class="grp" id="modeGrp"><button data-m="0" class="on" data-i18n="head.mode.vsEngine">人机</button><button data-m="1" data-i18n="head.mode.twoPlayer">双人同机</button></div>
+      </div>
+      <div class="row" id="rowSide"><span class="lab" data-i18n="row.side">执子</span>
+        <div class="grp" id="sideGrp"><button data-s="1" class="on" data-i18n="head.side.red">我执红</button><button data-s="-1" data-i18n="head.side.black">我执黑</button></div>
+      </div>
+      <div class="row"><span class="lab" data-i18n="row.hint">提示</span>
+        <div class="grp" id="hintGrp">
+          <button data-h="0" class="on" data-i18n="hint.0">关</button><button data-h="1" data-i18n="hint.1">元信息</button><button data-h="2" data-i18n="hint.2">全开</button>
+        </div>
+      </div>
+      <div class="note" id="hintNote" data-i18n="hintNote.0">对局中不给任何提示。</div>
+      <!-- agent 此刻能调什么, 由上面这个开关决定 (webmcp.js)。边界是页面的事实, 说出来才成其为界面。 -->
+      <div class="agentcard" id="agentCard">
+        <div class="ac-head"><b>Agent</b><span id="agentHost"></span></div>
+        <div class="ac-chips" id="agentChips"></div>
+        <div class="ac-call" id="agentLast"></div>
+      </div>
+      <div class="agentread" id="agentRead" hidden></div>
+    </div>
+
+  </aside>
+
+  <footer>
+    <details>
+      <summary data-i18n="foot.about">说明与快捷键</summary>
+      <div class="body" data-lang="zh">
+        引擎为 <b>Pikafish</b> (NNUE) 编译的 WebAssembly, 搜索全部在本机浏览器内运行, 没有分析后端。<br>
+        但开启分析、或用入门/业余/较强档对弈时, 当前局面的 FEN 会发给 chessdb 公共云库;
+        连续的局面原则上足以还原整局棋。要完全不外发, 用"全力"档并关闭分析。<br>
+        难度分档不以削减搜索深度实现 (那会产生机器特有的错误), 而是取多个候选后按分差采样。<br>
+        候选表的"云库"列取自 chessdb 公共云库, 是它对该着法的定性 (正着 / 可走)。
+        它是一个云端引擎库, 不是人类棋谱库, 所以不代表真人在该局面的实战成绩。<br>
+        评分单位是兵; 复盘用的"胜势点"是把评分压过一条自定 logistic 的结果,
+        用于同一局面内的相对比较, 没有拿象棋棋谱校准过, 不是胜率预测。<br>
+        <span class="kb">A</span> / <span class="kb">空格</span> 分析 ·
+        <span class="kb">Z</span> 悔棋 · <span class="kb">N</span> 重开 ·
+        <span class="kb">←</span><span class="kb">→</span> 翻棋谱
+      </div>
+      <div class="body" data-lang="en" hidden>
+        The engine is <b>Pikafish</b> (NNUE) compiled to WebAssembly. All search runs inside this
+        browser; there is no analysis backend.<br>
+        However, while analysis is on, and on the Novice / Club / Strong levels, the current position
+        (FEN) is sent to the public chessdb cloud book; a run of positions is in principle enough to
+        reconstruct a whole game. To send nothing at all, play on <b>Full</b> with analysis off.<br>
+        The levels are not made by cutting search depth (that produces mistakes no human makes).
+        The engine searches at full strength and then samples among the candidates by how much each
+        one loses.<br>
+        The "book" column comes from the chessdb cloud book: its verdict on that move. It is a cloud
+        <em>engine</em> library, not a database of human games, so it says nothing about how people
+        have actually scored from that position.<br>
+        Scores are in pawns. The "win-chance points" used in review are the score pushed through a
+        logistic curve of our own. They are for comparing moves within one position; they have never
+        been calibrated against a corpus of xiangqi games, and are not a win probability.<br>
+        <span class="kb">A</span> / <span class="kb">Space</span> analyse ·
+        <span class="kb">Z</span> undo · <span class="kb">N</span> new game ·
+        <span class="kb">←</span><span class="kb">→</span> step through the moves
+      </div>
+    </details>
+    <details class="agentpanel">
+      <summary><span data-i18n="foot.agent">Agent 工具</span> · WebMCP <span id="agentCount"></span></summary>
+      <div class="body">
+        <span data-lang="zh">
+        这一页把自己的功能按 <b>WebMCP</b> (<code>document.modelContext.registerTool</code>) 注册给浏览器里的 agent。
+        注册的工具集<b>只映射屏幕上有的东西</b>: 提示开关拨到"关", 引擎分析那一项就不存在, 不是"请 agent 别看", 是没有那个工具可调。
+        下面这张表是此刻的真实注册表, 随开关和对局状态变。</span>
+        <span data-lang="en" hidden>
+        This page registers its own features with the agent in your browser through <b>WebMCP</b>
+        (<code>document.modelContext.registerTool</code>). The registered set of tools
+        <b>mirrors only what is on the screen</b>: put the hint control on "Off" and
+        <code>analyze_position</code> ceases to exist. It is not "please don't look" —
+        there is no such tool to call. The table below is the live registry; it changes with the
+        controls and with the state of the game.</span>
+        <div class="tools" id="agentTools"></div>
+        <div class="call">
+          <select id="agentCallName"></select>
+          <input id="agentCallInput" type="text" value="{}" spellcheck="false" aria-label="JSON input">
+          <button type="button" class="act sm" id="agentCallBtn" data-i18n="foot.call">调用</button>
+        </div>
+        <pre id="agentCallOut"></pre>
+      </div>
+    </details>
+    <span id="selfcheck">自检 · 初始化</span>
+  </footer>
+
+</div>
+
+<!-- 确认框。只给"会把摆好的局面弄没"的那几个动作用, 内容由 askConfirm() 填。 -->
+<div class="modal" id="modal" hidden></div>
+
+<script src="i18n.js"></script>
+<script src="rules.js"></script>
+<script src="levels.js"></script>
+<script src="engine/pikafish.js"></script>
+<script src="vendor/onnxruntime/ort.wasm.min.js"></script>
+<script src="vendor/opencv/opencv.js"></script>
+<script src="browser-cv.js"></script>
+<script src="app.js"></script>
+<script src="webmcp.js"></script>
+</body>
+</html>

@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+engine/stockfish.*
+tests/*.png
+tests/video/
+video-demo/
+.tmp-pack/
+cvmodel/.venv/
+.env
+.env.*
+PROJECT.yaml
+.DS_Store
+Thumbs.db

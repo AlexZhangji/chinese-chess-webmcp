@@ -1,0 +1,283 @@
+diff --git a/src/main.cpp b/src/main.cpp
+index 57667d13..5ec706c0 100644
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -28,13 +28,64 @@
+ 
+ using namespace Stockfish;
+ 
+-#ifdef UNIVERSAL_BINARY
++#ifdef __EMSCRIPTEN__
++
++    #include <emscripten/emscripten.h>
++
++    #include <string>
++
++// WebAssembly entry point.
++//
++// A browser has no blocking stdin, so UCIEngine::loop() cannot be used: it
++// would park the only thread the page has and freeze the tab. Instead main()
++// just builds the engine and returns, leaving the module resident
++// (-sEXIT_RUNTIME=0), and the JS side pushes commands in one at a time through
++// pikafish_command() below.
++//
++// This is safe precisely because UCI is already asynchronous in this codebase:
++// "go" hands the position to the thread pool and returns, and results come back
++// through the on_update_full / on_bestmove callbacks, which write to stdout ->
++// Module.print -> the JS message listeners. So no call made here ever blocks.
++
++namespace {
++// Deliberately leaked: the module outlives main(), and tearing the engine down
++// at static-destruction time would race with search threads that are still
++// running.
++UCIEngine* g_uci = nullptr;
++}
++
++extern "C" EMSCRIPTEN_KEEPALIVE void pikafish_command(const char* cmd);  // silence
++                                                                        // -Wmissing-prototypes
++
++extern "C" EMSCRIPTEN_KEEPALIVE void pikafish_command(const char* cmd) {
++    if (g_uci && cmd)
++        g_uci->execute(std::string(cmd));
++}
++
++int main(int argc, char* argv[]) {
++    std::cout << engine_info() << std::endl;
++
++    Attacks::init();
++    Position::init();
++
++    auto cli = CommandLine(argc, argv);
++    g_uci    = new UCIEngine(std::move(cli));
++
++    Tune::init(g_uci->engine_options());
++
++    // No loop() here -- see comment above.
++    return 0;
++}
++
++#else
++
++    #ifdef UNIVERSAL_BINARY
+ namespace Stockfish {
+ 
+ int main(int argc, char* argv[]);  // silence 'no previous declaration'
+ 
+ __attribute__((used))  // keep main alive
+-#endif
++    #endif
+ 
+ int main(int argc, char* argv[]) {
+     std::cout << engine_info() << std::endl;
+@@ -52,10 +103,12 @@ int main(int argc, char* argv[]) {
+     return 0;
+ }
+ 
+-#ifdef UNIVERSAL_BINARY
++    #ifdef UNIVERSAL_BINARY
+ }  // namespace Stockfish
+ 
+-    #ifdef UNIVERSAL_NEEDS_MAIN_SHIM
++        #ifdef UNIVERSAL_NEEDS_MAIN_SHIM
+ int main(int argc, char* argv[]) { return Stockfish::main(argc, argv); }
++        #endif
+     #endif
+-#endif
++
++#endif  // __EMSCRIPTEN__
+diff --git a/src/uci.cpp b/src/uci.cpp
+index 1cc837c7..559bb621 100644
+--- a/src/uci.cpp
++++ b/src/uci.cpp
+@@ -104,88 +104,104 @@ void UCIEngine::loop() {
+             && !getline(std::cin, cmd))  // Wait for an input or an end-of-file (EOF) indication
+             cmd = "quit";
+ 
+-        currentCmd = cmd;
+-        std::istringstream is(cmd);
++        token = execute(cmd);
+ 
+-        token.clear();  // Avoid a stale if getline() returns nothing or a blank line
+-        is >> token;
++    } while (token != "quit" && cli.argc <= 1);  // The command-line arguments are one-shot
++}
+ 
+-        if (token == "quit" || token == "stop")
+-            engine.stop();
++// Dispatch a single UCI command and return its leading token.
++//
++// This is the whole body of the old loop(). It was split out so that hosts
++// which have no blocking stdin -- WebAssembly in a browser being the reason
++// this exists -- can drive the engine one command at a time from an event
++// handler instead of from a read loop. Nothing here blocks: "go" hands the
++// search to the thread pool and returns immediately, exactly as it always
++// did, so the caller's event loop stays free.
++std::string UCIEngine::execute(const std::string& cmd) {
++    std::string token;
+ 
+-        // The GUI sends 'ponderhit' to tell that the user has played the expected move.
+-        // So, 'ponderhit' is sent if pondering was done on the same move that the user
+-        // has played. The search should continue, but should also switch from pondering
+-        // to the normal search.
+-        else if (token == "ponderhit")
+-            engine.set_ponderhit(false);
++    currentCmd = cmd;
++    std::istringstream is(cmd);
+ 
+-        else if (token == "uci")
+-        {
+-            sync_cout << "id name " << engine_info(true) << "\n"
+-                      << engine.get_options() << sync_endl;
++    token.clear();  // Avoid a stale if getline() returns nothing or a blank line
++    is >> token;
+ 
+-            sync_cout << "uciok" << sync_endl;
+-        }
++    if (token == "quit" || token == "stop")
++        engine.stop();
+ 
+-        else if (token == "setoption")
+-            setoption(is);
+-        else if (token == "go")
+-        {
+-            // send info strings after the go command is sent for old GUIs and python-chess
+-            print_info_string(engine.numa_config_information_as_string());
+-            print_info_string(engine.thread_allocation_information_as_string());
+-            go(is);
+-        }
+-        else if (token == "position")
+-            position(is);
+-        else if (token == "ucinewgame")
+-            engine.search_clear();
+-        else if (token == "isready")
+-            sync_cout << "readyok" << sync_endl;
++    // The GUI sends 'ponderhit' to tell that the user has played the expected move.
++    // So, 'ponderhit' is sent if pondering was done on the same move that the user
++    // has played. The search should continue, but should also switch from pondering
++    // to the normal search.
++    else if (token == "ponderhit")
++        engine.set_ponderhit(false);
+ 
+-        // Add custom non-UCI commands, mainly for debugging purposes.
+-        else if (token == "flip")
+-        {
+-            if (auto err = engine.flip())
+-            {
+-                terminate_on_critical_error(err->what());
+-            }
+-        }
+-        else if (token == "bench")
+-            bench(is);
+-        else if (token == BenchmarkCommand)
+-            benchmark(is);
+-        else if (token == "d")
+-            sync_cout << engine.visualize() << sync_endl;
+-        else if (token == "eval")
+-            engine.trace_eval();
+-        else if (token == "compiler")
+-            sync_cout << compiler_info() << sync_endl;
+-        else if (token == "export_net")
+-        {
+-            std::optional<std::filesystem::path> file;
+-            std::string                          filename;
++    else if (token == "uci")
++    {
++        sync_cout << "id name " << engine_info(true) << "\n"
++                  << engine.get_options() << sync_endl;
+ 
+-            if (is >> filename)
+-                file = path_from_utf8(filename);
++        sync_cout << "uciok" << sync_endl;
++    }
+ 
+-            engine.save_network(file);
++    else if (token == "setoption")
++        setoption(is);
++    else if (token == "go")
++    {
++        // send info strings after the go command is sent for old GUIs and python-chess
++        print_info_string(engine.numa_config_information_as_string());
++        print_info_string(engine.thread_allocation_information_as_string());
++        go(is);
++    }
++    else if (token == "position")
++        position(is);
++    else if (token == "ucinewgame")
++        engine.search_clear();
++    else if (token == "isready")
++        sync_cout << "readyok" << sync_endl;
++
++    // Add custom non-UCI commands, mainly for debugging purposes.
++    else if (token == "flip")
++    {
++        if (auto err = engine.flip())
++        {
++            terminate_on_critical_error(err->what());
+         }
+-        else if (token == "--help" || token == "help" || token == "--license" || token == "license")
+-            sync_cout
+-              << "\nPikafish is a powerful xiangqi engine for playing and analyzing."
+-                 "\nIt is released as free software licensed under the GNU GPLv3 License."
+-                 "\nPikafish is normally used with a graphical user interface (GUI) and implements"
+-                 "\nthe Universal Chess Interface (UCI) protocol to communicate with a GUI, an API, etc."
+-                 "\nFor any further information, visit https://github.com/official-pikafish/Pikafish#readme"
+-                 "\nor read the corresponding README.md and Copying.txt files distributed along with this program.\n"
+-              << sync_endl;
+-        else if (!token.empty() && token[0] != '#')
+-            sync_cout << "Unknown command: '" << cmd << "'. Type help for more information."
+-                      << sync_endl;
++    }
++    else if (token == "bench")
++        bench(is);
++    else if (token == BenchmarkCommand)
++        benchmark(is);
++    else if (token == "d")
++        sync_cout << engine.visualize() << sync_endl;
++    else if (token == "eval")
++        engine.trace_eval();
++    else if (token == "compiler")
++        sync_cout << compiler_info() << sync_endl;
++    else if (token == "export_net")
++    {
++        std::optional<std::filesystem::path> file;
++        std::string                          filename;
+ 
+-    } while (token != "quit" && cli.argc <= 1);  // The command-line arguments are one-shot
++        if (is >> filename)
++            file = path_from_utf8(filename);
++
++        engine.save_network(file);
++    }
++    else if (token == "--help" || token == "help" || token == "--license" || token == "license")
++        sync_cout
++          << "\nPikafish is a powerful xiangqi engine for playing and analyzing."
++             "\nIt is released as free software licensed under the GNU GPLv3 License."
++             "\nPikafish is normally used with a graphical user interface (GUI) and implements"
++             "\nthe Universal Chess Interface (UCI) protocol to communicate with a GUI, an API, etc."
++             "\nFor any further information, visit https://github.com/official-pikafish/Pikafish#readme"
++             "\nor read the corresponding README.md and Copying.txt files distributed along with this program.\n"
++          << sync_endl;
++    else if (!token.empty() && token[0] != '#')
++        sync_cout << "Unknown command: '" << cmd << "'. Type help for more information."
++                  << sync_endl;
++
++    return token;
+ }
+ 
+ Search::LimitsType UCIEngine::parse_limits(std::istream& is) {
+diff --git a/src/uci.h b/src/uci.h
+index 910fcc9b..6b63f1d5 100644
+--- a/src/uci.h
++++ b/src/uci.h
+@@ -43,6 +43,11 @@ class UCIEngine {
+ 
+     void loop();
+ 
++    // Dispatch one UCI command; returns its leading token (so callers can spot
++    // "quit"). loop() is just a getline() feeding this. Exposed for hosts with
++    // no blocking stdin -- see main.cpp's __EMSCRIPTEN__ entry point.
++    std::string execute(const std::string& cmd);
++
+     static int         to_cp(Value v, const Position& pos);
+     static std::string format_score(const Score& s);
+     static std::string square(Square s);
