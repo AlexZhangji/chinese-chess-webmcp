@@ -12,6 +12,8 @@ The demo follows one real park position through the complete workflow: photo, de
 
 [Watch the corrected 56-second demo](media/demo/chinese-chess-webmcp-demo.mp4)
 
+[Watch the latest demo on YouTube](https://youtu.be/d60A0dA97Pw)
+
 [Open the browser preview](https://alexzhangji.github.io/chinese-chess-webmcp/?lang=en)
 
 The GitHub Pages build is the complete app. The board recognizer, perspective correction, engine, and WebMCP layer all run in the browser. No recognition server or API key is required.
