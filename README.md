@@ -28,6 +28,20 @@ The GitHub Pages build is the complete app. The board recognizer, perspective co
 4. To try photo recognition, open the [included park-game photo](https://alexzhangji.github.io/chinese-chess-webmcp/media/samples/park-game.png), then ask the human to drop, paste, or open it in the app. The human confirms the reconstructed board and side to move before analysis.
 5. When `analyze_position` is available, use its structured candidates and continuation to answer the person's actual question. You can also use `show_on_board` to make the explanation visible on the board.
 
+### Where an agent finds the data
+
+| Need | Source |
+| --- | --- |
+| Current board, FEN, turn, history, and capability boundary | Call `get_position`. |
+| Legal moves | Call `get_legal_moves`. |
+| Ranked moves, scores, continuation, and threats | Call `analyze_position` when listed in `tools_available`. |
+| Sample photos and verified screenshots | `media/samples/`; URLs are also returned by `get_position`. |
+| Photo-recognition weights | `cvmodel/hf-space/onnx/`. |
+| Browser engine and NNUE weight | `engine/`. |
+| Exact sample ground truth | `tests/photo_recognition_e2e.py`. |
+
+There is no hidden application database or recognition backend. Live game state is owned by the page, and the callable view of that state comes from WebMCP.
+
 ## What runs where
 
 | Capability | Runtime | Network behavior |

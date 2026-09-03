@@ -147,7 +147,7 @@
   }
 
   function boardText(pos) {
-    /* rank 10 (black's back rank) first, red at the bottom — the same way the board is drawn
+    /* rank 10 (black's back rank) first, red at the bottom, the same way the board is drawn
        for a red player. '.' is an empty point. */
     const rows = [];
     for (let r = 0; r < H; r++) {
@@ -236,6 +236,8 @@
         project: {
           name: 'Chinese Chess WebMCP',
           purpose: 'Expose exact board state, legal moves, browser photo recognition, board actions, and deep engine analysis as capabilities an AI can use without guessing from pixels.',
+          repository: 'https://github.com/AlexZhangji/chinese-chess-webmcp',
+          agent_guide: 'https://github.com/AlexZhangji/chinese-chess-webmcp/blob/main/AGENTS.md',
         },
         agent_quick_start: [
           'Call get_position first, then use only the names in tools_available.',
@@ -244,6 +246,9 @@
         ],
         samples: {
           park_photo: new URL('media/samples/park-game.png', document.baseURI).href,
+          tv_match_photo: new URL('media/samples/tv-match.png', document.baseURI).href,
+          verified_analysis_screenshot: new URL('media/samples/product-en-analysis.png', document.baseURI).href,
+          demo_video: new URL('media/demo/chinese-chess-webmcp-demo.mp4', document.baseURI).href,
           verified_fen: '3akab2/3n3r1/1c1Rb1n1c/4p1p1p/2p6/r3P1P2/2P5P/N1C1C1N2/9/1RBAKAB2 w - - 0 1',
           note: 'The sample image is for the page photo-upload workflow. A file input still requires the human to open, paste, or drop the file.',
         },
@@ -616,7 +621,7 @@
   /* 「我这步行不行」。元信息这一档的另一半: 不说该走哪, 但你说出一步它能判。
 
      ★ 它和页面上那个输入框调的是 app.js 里同一个 checkMove()。人能得到的判断,
-     agent 得到的是同一份 —— 这一档没有任何一方比另一方多知道一点。
+     agent 得到的是同一份。这一档没有任何一方比另一方多知道一点。
      首选是什么不在返回值里, 也没有任何字段能反推出来。 */
   T.check_my_move = {
     description: 'Judge a move the human is considering: is it the engine\'s first choice, playable, soft, or a problem, and how many win-chance points behind the best move it is. It never reveals what the best move is. This is the "元信息" (meta) hint level made callable, and it answers exactly what the box in the analysis panel answers for the human.',

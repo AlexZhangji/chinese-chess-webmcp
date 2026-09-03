@@ -28,6 +28,20 @@ GitHub Pages 上部署的是完整应用。棋盘识别、透视校正、象棋�
 4. 如需测试照片识别，打开[内置公园棋局示例](https://alexzhangji.github.io/chinese-chess-webmcp/media/samples/park-game.png)，请用户把它拖入、粘贴或通过页面打开。用户需要在分析前确认还原棋盘和行棋方。
 5. `analyze_position` 可用时，使用其结构化候选着法和后续变化回答用户真正关心的问题。也可以调用 `show_on_board`，把解释直接画在棋盘上。
 
+### Agent 去哪里找数据
+
+| 需要的数据 | 来源 |
+| --- | --- |
+| 当前棋盘、FEN、行棋方、历史记录和能力边界 | 调用 `get_position`。 |
+| 合法着法 | 调用 `get_legal_moves`。 |
+| 候选着法排名、评分、后续变化和威胁 | 当 `tools_available` 中出现 `analyze_position` 时调用它。 |
+| 示例照片与经过验证的截图 | `media/samples/`，对应 URL 也会由 `get_position` 返回。 |
+| 照片识别模型权重 | `cvmodel/hf-space/onnx/`。 |
+| 浏览器象棋引擎与 NNUE 权重 | `engine/`。 |
+| 示例棋局的准确标准答案 | `tests/photo_recognition_e2e.py`。 |
+
+项目没有隐藏的应用数据库或识别后端。实时棋局状态由网页持有，Agent 通过 WebMCP 获得这份状态的可调用视图。
+
 ## 各项能力在哪里运行
 
 | 能力 | 运行环境 | 网络行为 |

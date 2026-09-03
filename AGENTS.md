@@ -25,6 +25,20 @@ Verified FEN:
 
 Ask the human to open, paste, or drop the image into the page. The browser recognizer reconstructs the board and highlights uncertain points. The human must confirm the board and side to move before engine analysis. Do not infer whose turn it is from a still photo.
 
+## Where data lives
+
+- Live board state, FEN, turn, history, and tool availability: call `get_position`.
+- Legal moves: call `get_legal_moves`.
+- Ranked engine candidates and continuations: call `analyze_position` when it appears in `tools_available`.
+- Sample assets: `media/samples/`. The runtime URLs are included in the `get_position` response.
+- Recognition models: `cvmodel/hf-space/onnx/`.
+- Browser recognition pipeline: `browser-cv.js`.
+- Engine runtime and NNUE weight: `engine/`.
+- WebMCP contracts and dynamic registration: `webmcp.js`.
+- Verified photo ground truth: `tests/photo_recognition_e2e.py`.
+
+There is no hidden application database or recognition backend. The page owns live state in memory. Photos stay in the browser, and only an optional FEN lookup is sent to the public opening database when that feature is enabled.
+
 ## Local verification
 
 Run `py -3 serve.py 8794`, then open `http://127.0.0.1:8794/?lang=en`.
