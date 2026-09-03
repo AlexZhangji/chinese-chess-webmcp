@@ -224,7 +224,7 @@
   const T = {};
 
   T.get_position = {
-    description: 'Read the xiangqi (Chinese chess) board exactly as the human sees it: pieces, side to move, move list in Chinese notation, game status, the on-screen evaluation, loose pieces, and which tools are currently available to you and why the others are not. Call this first.',
+    description: 'Call this first. Read the xiangqi (Chinese chess) board exactly as the human sees it: pieces, side to move, move list in Chinese notation, game status, the on-screen evaluation, loose pieces, the current tool boundary, and a short agent quick start with the bundled photo sample.',
     annotations: { readOnlyHint: true },
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
     async execute() {
@@ -233,6 +233,20 @@
       const ply = S.setup ? 0 : (S.cursor < 0 ? S.hist.length : S.cursor);
       const out = {
         ok: true,
+        project: {
+          name: 'Chinese Chess WebMCP',
+          purpose: 'Expose exact board state, legal moves, browser photo recognition, board actions, and deep engine analysis as capabilities an AI can use without guessing from pixels.',
+        },
+        agent_quick_start: [
+          'Call get_position first, then use only the names in tools_available.',
+          'For a photo, ask the human to open, paste, or drop it into the page. The dedicated browser recognizer reconstructs the board; the human confirms the board and side to move.',
+          'Use analyze_position for ranked engine candidates when it is available, and show_on_board when a visible explanation would help.',
+        ],
+        samples: {
+          park_photo: new URL('media/samples/park-game.png', document.baseURI).href,
+          verified_fen: '3akab2/3n3r1/1c1Rb1n1c/4p1p1p/2p6/r3P1P2/2P5P/N1C1C1N2/9/1RBAKAB2 w - - 0 1',
+          note: 'The sample image is for the page photo-upload workflow. A file input still requires the human to open, paste, or drop the file.',
+        },
         fen: pos.fen(),
         board: boardText(pos),
         pieces: pieces(pos),

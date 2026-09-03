@@ -33,6 +33,7 @@
 
       'setup.1': '1 · 读图', 'setup.shot': '拍一张', 'setup.read': '读一张图',
       'setup.readHint': '也可以 Ctrl+V 粘贴截图, 或把图片拖到棋盘上',
+      'setup.sample': '打开示例照片',
       'setup.2': '2 · 改子',
       'setup.editHint': '拿一个子点在盘上落下去 · 拿"核对"只消红点不改子 · 拿"拿掉"清子',
       'setup.3': '3 · 轮谁走', 'setup.redFirst': '红先', 'setup.blackFirst': '黑先',
@@ -143,6 +144,7 @@
 
       'setup.1': '1 · from a photo', 'setup.shot': 'Take a photo', 'setup.read': 'Open an image',
       'setup.readHint': 'You can also paste a screenshot with Ctrl+V, or drop an image on the board',
+      'setup.sample': 'Open the included sample',
       'setup.2': '2 · fix pieces',
       'setup.editHint': 'Pick a piece and click a point to place it · pick "check" to clear a red dot without changing the piece · pick "remove" to empty a point',
       'setup.3': '3 · side to move', 'setup.redFirst': 'Red moves', 'setup.blackFirst': 'Black moves',

@@ -18,6 +18,14 @@ The demo follows one real park position through the complete workflow: photo, de
 
 The GitHub Pages build is the complete app. The board recognizer, perspective correction, engine, and WebMCP layer all run in the browser. No recognition server or API key is required.
 
+## Agent quick start
+
+1. Open the [live app](https://alexzhangji.github.io/chinese-chess-webmcp/?lang=en) in a WebMCP-compatible browser.
+2. Call `get_position` first. Its response describes the exact board and the tools currently available to you.
+3. Use `tools_available` as the live capability boundary. Hint settings, setup mode, and engine readiness intentionally change that list.
+4. To try photo recognition, open the [included park-game photo](https://alexzhangji.github.io/chinese-chess-webmcp/media/samples/park-game.png), then ask the human to drop, paste, or open it in the app. The human confirms the reconstructed board and side to move before analysis.
+5. When `analyze_position` is available, use its structured candidates and continuation to answer the person's actual question. You can also use `show_on_board` to make the explanation visible on the board.
+
 ## What runs where
 
 | Capability | Runtime | Network behavior |

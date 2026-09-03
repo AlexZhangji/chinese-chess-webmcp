@@ -2,6 +2,8 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
+<meta name="description" content="A bilingual Chinese chess app with in-browser photo recognition, engine analysis, and native WebMCP tools for exact board state and actions.">
+<meta name="application-name" content="Chinese Chess WebMCP">
 <!-- 公网静态托管发不了 COOP/COEP 头, 这个 service worker 替它补上 (MIT, 见 THIRD_PARTY.md)。
      serve.py 那条路已经有真头, crossOriginIsolated 为真时它什么都不做。 -->
 <script src="coi-serviceworker.js"></script>
@@ -335,6 +337,8 @@ canvas:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
    本来就属于小一档的 UI 文案, 用 UI 字体既对味也躲开子集这件事。
    加中文文案时记住这条: 正文 serif 要重跑 assets/fonts/build.sh, UI 字体不用。 */
 .setup .hint{font:400 10.5px/1.4 var(--ui);color:var(--ink-mute);letter-spacing:.02em}
+.setup .sample{color:var(--crimson);text-decoration:none;border-bottom:1px solid currentColor;white-space:nowrap}
+.setup .sample:hover{color:var(--ink)}
 .act.sm{font-size:11px;padding:7px 11px}
 .grp.sm button{font-size:11px;padding:7px 11px}
 /* 棋子按钮用棋子的字体和棋子的颜色 —— 手上拿的是哪个子, 一眼就该认出来 */
@@ -774,7 +778,7 @@ footer .agentpanel code{font-family:var(--mono);font-size:11px}
         <span class="lab" data-i18n="setup.1">1 · 读图</span>
         <button class="act sm" id="shotBtn" hidden data-i18n="setup.shot">拍一张</button>
         <button class="act sm" id="readImgBtn" data-i18n="setup.read">读一张图</button>
-        <span class="hint" data-i18n="setup.readHint">也可以 Ctrl+V 粘贴截图, 或把图片拖到棋盘上</span>
+        <span class="hint"><span data-i18n="setup.readHint">也可以 Ctrl+V 粘贴截图, 或把图片拖到棋盘上</span> · <a class="sample" href="media/samples/park-game.png" target="_blank" rel="noopener" data-i18n="setup.sample">打开示例照片</a></span>
       </div>
       <div class="srow">
         <span class="lab" data-i18n="setup.2">2 · 改子</span>
