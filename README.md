@@ -1,3 +1,5 @@
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 # Chinese Chess WebMCP: How to Win Grandpa's Respect
 
 *Go deeper, not just wider: turn a park-game photo into an exact board, deep engine analysis, and your best shot at earning Grandpa's respect.*
